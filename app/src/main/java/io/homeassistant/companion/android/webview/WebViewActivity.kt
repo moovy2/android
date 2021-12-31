@@ -70,6 +70,7 @@ import io.homeassistant.companion.android.databinding.DialogAuthenticationBindin
 import io.homeassistant.companion.android.databinding.ExoPlayerViewBinding
 import io.homeassistant.companion.android.launch.LaunchActivity
 import io.homeassistant.companion.android.nfc.NfcSetupActivity
+import io.homeassistant.companion.android.notifications.WebsocketNotificationManager
 import io.homeassistant.companion.android.sensors.SensorReceiver
 import io.homeassistant.companion.android.sensors.SensorWorker
 import io.homeassistant.companion.android.settings.SettingsActivity
@@ -79,6 +80,7 @@ import io.homeassistant.companion.android.util.DisabledLocationHandler
 import io.homeassistant.companion.android.util.isStarted
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -601,6 +603,7 @@ class WebViewActivity : BaseActivity(), io.homeassistant.companion.android.webvi
         }
     }
 
+    @ExperimentalCoroutinesApi
     override fun onResume() {
         super.onResume()
         if ((currentLang != languagesManager.getCurrentLang()) || currentAutoplay != presenter.isAutoPlayVideoEnabled())
@@ -618,6 +621,7 @@ class WebViewActivity : BaseActivity(), io.homeassistant.companion.android.webvi
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         SensorWorker.start(this)
+        WebsocketNotificationManager.start(this)
         checkAndWarnForDisabledLocation()
     }
 
