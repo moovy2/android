@@ -8,7 +8,7 @@ import android.os.Process.myUid
 import io.homeassistant.companion.android.database.AppDatabase
 import io.homeassistant.companion.android.database.sensor.Attribute
 import io.homeassistant.companion.android.database.sensor.Sensor
-import io.homeassistant.companion.android.database.sensor.Setting
+import io.homeassistant.companion.android.database.sensor.SensorSetting
 import io.homeassistant.companion.android.common.R as commonR
 
 interface SensorManager {
@@ -142,7 +142,7 @@ interface SensorManager {
             .firstOrNull { it.name == settingName }
             ?.value
         if (setting == null)
-            sensorDao.add(Setting(sensor.id, settingName, default, settingType, entries, enabled))
+            sensorDao.add(SensorSetting(sensor.id, settingName, default, settingType, entries, enabled))
 
         return setting ?: default
     }
