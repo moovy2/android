@@ -1,8 +1,6 @@
 package io.homeassistant.companion.android.controls
 
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import android.os.Build
 import android.service.controls.Control
 import android.service.controls.DeviceTypes
@@ -16,124 +14,104 @@ import android.service.controls.templates.ToggleTemplate
 import androidx.annotation.RequiresApi
 import io.homeassistant.companion.android.common.data.integration.Entity
 import io.homeassistant.companion.android.common.data.integration.IntegrationRepository
+import io.homeassistant.companion.android.common.data.integration.getCoverPosition
 import io.homeassistant.companion.android.common.data.websocket.impl.entities.AreaRegistryResponse
-import io.homeassistant.companion.android.webview.WebViewActivity
-import kotlinx.coroutines.runBlocking
 import io.homeassistant.companion.android.common.R as commonR
 
 @RequiresApi(Build.VERSION_CODES.R)
-class CoverControl {
-    companion object : HaControl {
-        const val SUPPORT_SET_POSITION = 4
-        override fun createControl(
-            context: Context,
-            entity: Entity<Map<String, Any>>,
-            area: AreaRegistryResponse?
-        ): Control {
-            val control = Control.StatefulBuilder(
-                entity.entityId,
-                PendingIntent.getActivity(
-                    context,
-                    0,
-                    WebViewActivity.newInstance(context.applicationContext, "entityId:${entity.entityId}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE
+object CoverControl : HaControl {
+    const val SUPPORT_SET_POSITION = 4
+    override fun provideControlFeatures(
+        context: Context,
+        control: Control.StatefulBuilder,
+        entity: Entity<Map<String, Any>>,
+        area: AreaRegistryResponse?,
+        baseUrl: String?
+    ): Control.StatefulBuilder {
+        control.setStatusText(
+            when (entity.state) {
+                "closed" -> context.getString(commonR.string.state_closed)
+                "closing" -> context.getString(commonR.string.state_closing)
+                "open" -> context.getString(commonR.string.state_open)
+                "opening" -> context.getString(commonR.string.state_opening)
+                "unavailable" -> context.getString(commonR.string.state_unavailable)
+                else -> entity.state
+            }
+        )
+        val position = entity.getCoverPosition()
+        control.setControlTemplate(
+            if ((entity.attributes["supported_features"] as Int) and SUPPORT_SET_POSITION == SUPPORT_SET_POSITION) {
+                ToggleRangeTemplate(
+                    entity.entityId,
+                    entity.state in listOf("open", "opening"),
+                    "",
+                    RangeTemplate(
+                        entity.entityId,
+                        position?.min ?: 0f,
+                        position?.max ?: 100f,
+                        position?.value ?: 0f,
+                        1f,
+                        "%.0f%%"
+                    )
                 )
-            )
-            control.setTitle(
-                (entity.attributes["friendly_name"] ?: entity.entityId) as CharSequence
-            )
-            control.setSubtitle(area?.name ?: "")
-            control.setDeviceType(
-                when (entity.attributes["device_class"]) {
-                    "awning" -> DeviceTypes.TYPE_AWNING
-                    "blind" -> DeviceTypes.TYPE_BLINDS
-                    "curtain" -> DeviceTypes.TYPE_CURTAIN
-                    "door" -> DeviceTypes.TYPE_DOOR
-                    "garage" -> DeviceTypes.TYPE_GARAGE
-                    "gate" -> DeviceTypes.TYPE_GATE
-                    "shutter" -> DeviceTypes.TYPE_SHUTTER
-                    "window" -> DeviceTypes.TYPE_WINDOW
-                    else -> DeviceTypes.TYPE_GENERIC_OPEN_CLOSE
-                }
-            )
-            control.setZone(area?.name ?: context.getString(commonR.string.domain_cover))
-            control.setStatus(Control.STATUS_OK)
-            control.setStatusText(
-                when (entity.state) {
-                    "closed" -> context.getString(commonR.string.state_closed)
-                    "closing" -> context.getString(commonR.string.state_closing)
-                    "open" -> context.getString(commonR.string.state_open)
-                    "opening" -> context.getString(commonR.string.state_opening)
-                    "unavailable" -> context.getString(commonR.string.state_unavailable)
-                    else -> entity.state
-                }
-            )
-            val minValue = 0f
-            val maxValue = 100f
-            var currentValue =
-                (entity.attributes["current_position"] as? Number)?.toFloat() ?: 0f
-            if (currentValue < minValue)
-                currentValue = minValue
-            if (currentValue > maxValue)
-                currentValue = maxValue
-            control.setControlTemplate(
-                if ((entity.attributes["supported_features"] as Int) and SUPPORT_SET_POSITION == SUPPORT_SET_POSITION)
-                    ToggleRangeTemplate(
-                        entity.entityId,
+            } else {
+                ToggleTemplate(
+                    entity.entityId,
+                    ControlButton(
                         entity.state in listOf("open", "opening"),
-                        "",
-                        RangeTemplate(
-                            entity.entityId,
-                            minValue,
-                            maxValue,
-                            currentValue,
-                            1f,
-                            "%.0f%%"
-                        )
+                        "Description"
                     )
-                else
-                    ToggleTemplate(
-                        entity.entityId,
-                        ControlButton(
-                            entity.state in listOf("open", "opening"),
-                            "Description"
-                        )
-                    )
-            )
-            return control.build()
+                )
+            }
+        )
+        return control
+    }
+
+    override fun getDeviceType(entity: Entity<Map<String, Any>>): Int =
+        when (entity.attributes["device_class"]) {
+            "awning" -> DeviceTypes.TYPE_AWNING
+            "blind" -> DeviceTypes.TYPE_BLINDS
+            "curtain" -> DeviceTypes.TYPE_CURTAIN
+            "door" -> DeviceTypes.TYPE_DOOR
+            "garage" -> DeviceTypes.TYPE_GARAGE
+            "gate" -> DeviceTypes.TYPE_GATE
+            "shutter" -> DeviceTypes.TYPE_SHUTTER
+            "window" -> DeviceTypes.TYPE_WINDOW
+            else -> DeviceTypes.TYPE_GENERIC_OPEN_CLOSE
         }
-        override fun performAction(
-            integrationRepository: IntegrationRepository,
-            action: ControlAction
-        ): Boolean {
-            return runBlocking {
-                return@runBlocking when (action) {
-                    is BooleanAction -> {
-                        integrationRepository.callService(
-                            action.templateId.split(".")[0],
-                            if ((action as? BooleanAction)?.newState == true) "open_cover" else "close_cover",
-                            hashMapOf(
-                                "entity_id" to action.templateId
-                            )
-                        )
-                        true
-                    }
-                    is FloatAction -> {
-                        val convertPosition = action.newValue
-                        integrationRepository.callService(
-                            action.templateId.split(".")[0],
-                            "set_cover_position",
-                            hashMapOf(
-                                "entity_id" to action.templateId,
-                                "position" to convertPosition.toInt()
-                            )
-                        )
-                        true
-                    }
-                    else -> {
-                        false
-                    }
-                }
+
+    override fun getDomainString(context: Context, entity: Entity<Map<String, Any>>): String =
+        context.getString(commonR.string.domain_cover)
+
+    override suspend fun performAction(
+        integrationRepository: IntegrationRepository,
+        action: ControlAction
+    ): Boolean {
+        return when (action) {
+            is BooleanAction -> {
+                integrationRepository.callService(
+                    action.templateId.split(".")[0],
+                    if ((action as? BooleanAction)?.newState == true) "open_cover" else "close_cover",
+                    hashMapOf(
+                        "entity_id" to action.templateId
+                    )
+                )
+                true
+            }
+            is FloatAction -> {
+                val convertPosition = action.newValue
+                integrationRepository.callService(
+                    action.templateId.split(".")[0],
+                    "set_cover_position",
+                    hashMapOf(
+                        "entity_id" to action.templateId,
+                        "position" to convertPosition.toInt()
+                    )
+                )
+                true
+            }
+            else -> {
+                false
             }
         }
     }

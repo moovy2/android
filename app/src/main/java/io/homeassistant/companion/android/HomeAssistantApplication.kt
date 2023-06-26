@@ -11,13 +11,18 @@ import android.os.Build
 import android.os.PowerManager
 import android.telephony.TelephonyManager
 import dagger.hilt.android.HiltAndroidApp
+import io.homeassistant.companion.android.common.data.keychain.KeyChainRepository
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
 import io.homeassistant.companion.android.common.sensors.LastUpdateManager
 import io.homeassistant.companion.android.database.AppDatabase
+import io.homeassistant.companion.android.database.settings.SensorUpdateFrequencySetting
 import io.homeassistant.companion.android.sensors.SensorReceiver
+import io.homeassistant.companion.android.settings.language.LanguagesManager
+import io.homeassistant.companion.android.util.LifecycleHandler
+import io.homeassistant.companion.android.websocket.WebsocketBroadcastReceiver
 import io.homeassistant.companion.android.widgets.button.ButtonWidget
 import io.homeassistant.companion.android.widgets.entity.EntityWidget
-import io.homeassistant.companion.android.widgets.media_player_controls.MediaPlayerControlsWidget
+import io.homeassistant.companion.android.widgets.mediaplayer.MediaPlayerControlsWidget
 import io.homeassistant.companion.android.widgets.template.TemplateWidget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,14 +38,40 @@ open class HomeAssistantApplication : Application() {
     @Inject
     lateinit var prefsRepository: PrefsRepository
 
+    @Inject
+    lateinit var keyChainRepository: KeyChainRepository
+
+    @Inject
+    lateinit var languagesManager: LanguagesManager
+
     override fun onCreate() {
         super.onCreate()
+
+        registerActivityLifecycleCallbacks(LifecycleHandler)
 
         ioScope.launch {
             initCrashReporting(
                 applicationContext,
                 prefsRepository.isCrashReporting()
             )
+        }
+
+        languagesManager.applyCurrentLang()
+
+        // This will make sure we start/stop when we actually need too.
+        registerReceiver(
+            WebsocketBroadcastReceiver(),
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+                addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION)
+                addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
+            }
+        )
+
+        ioScope.launch {
+            keyChainRepository.load(applicationContext)
         }
 
         val sensorReceiver = SensorReceiver()
@@ -67,6 +98,16 @@ open class HomeAssistantApplication : Application() {
             }
         )
 
+        // Update Quest only sensors when the device is a Quest
+        if (Build.MODEL == "Quest") {
+            registerReceiver(
+                sensorReceiver,
+                IntentFilter().apply {
+                    addAction("com.oculus.intent.action.MOUNT_STATE_CHANGED")
+                }
+            )
+        }
+
         // Update doze mode immediately on supported devices
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             registerReceiver(
@@ -80,7 +121,10 @@ open class HomeAssistantApplication : Application() {
         // This will trigger an update any time the wifi state has changed
         registerReceiver(
             sensorReceiver,
-            IntentFilter(WifiManager.NETWORK_STATE_CHANGED_ACTION)
+            IntentFilter().apply {
+                addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION)
+                addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
+            }
         )
 
         // This will cause the phone state sensor to be updated every time the OS broadcasts that a call triggered.
@@ -126,14 +170,32 @@ open class HomeAssistantApplication : Application() {
             )
         }
 
+        registerReceiver(
+            sensorReceiver,
+            IntentFilter("androidx.car.app.connection.action.CAR_CONNECTION_UPDATED")
+        )
+
+        // Add a receiver for the shutdown event to attempt to send 1 final sensor update
+        registerReceiver(
+            sensorReceiver,
+            IntentFilter(Intent.ACTION_SHUTDOWN)
+        )
+
         // Register for all saved user intents
         val sensorDao = AppDatabase.getInstance(applicationContext).sensorDao()
         val allSettings = sensorDao.getSettings(LastUpdateManager.lastUpdate.id)
         for (setting in allSettings) {
             if (setting.value != "" && setting.value != "SensorWorker") {
+                val settingSplit = setting.value.split(',')
                 registerReceiver(
                     sensorReceiver,
-                    IntentFilter(setting.value)
+                    IntentFilter().apply {
+                        addAction(settingSplit[0])
+                        if (settingSplit.size > 1) {
+                            val categories = settingSplit.minus(settingSplit[0])
+                            categories.forEach { addCategory(it) }
+                        }
+                    }
                 )
             }
         }
@@ -146,6 +208,15 @@ open class HomeAssistantApplication : Application() {
                     addAction(Intent.ACTION_MANAGED_PROFILE_AVAILABLE)
                     addAction(Intent.ACTION_MANAGED_PROFILE_UNAVAILABLE)
                 }
+            )
+        }
+
+        // Register for faster sensor updates if enabled
+        val settingDao = AppDatabase.getInstance(applicationContext).settingsDao().get(0)
+        if (settingDao != null && (settingDao.sensorUpdateFrequency == SensorUpdateFrequencySetting.FAST_WHILE_CHARGING || settingDao.sensorUpdateFrequency == SensorUpdateFrequencySetting.FAST_ALWAYS)) {
+            registerReceiver(
+                sensorReceiver,
+                IntentFilter(Intent.ACTION_TIME_TICK)
             )
         }
 

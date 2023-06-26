@@ -9,6 +9,7 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.getSystemService
 import java.util.Calendar
 
 class ForegroundServiceLauncher(private val serviceClass: Class<out Service>) {
@@ -30,8 +31,9 @@ class ForegroundServiceLauncher(private val serviceClass: Class<out Service>) {
             ContextCompat.startForegroundService(context, Intent(context, serviceClass).apply { block() })
             Log.d(TAG, "Start service ${serviceClass.simpleName}")
         } else {
-            if (restartInProcess) Log.w(TAG, "Cannot start service ${serviceClass.simpleName}. Service currently restarting...")
-            else if (isRunning) Log.w(TAG, "Cannot start service ${serviceClass.simpleName}. Service is not running...")
+            if (restartInProcess) {
+                Log.w(TAG, "Cannot start service ${serviceClass.simpleName}. Service currently restarting...")
+            } else if (isRunning) Log.w(TAG, "Cannot start service ${serviceClass.simpleName}. Service is not running...")
         }
     }
 
@@ -39,8 +41,9 @@ class ForegroundServiceLauncher(private val serviceClass: Class<out Service>) {
     fun stopService(context: Context) {
         if (isStarting || restartInProcess) {
             shouldStop = true
-            if (restartInProcess) Log.d(TAG, "Stop service ${serviceClass.simpleName}. Service currently restarting. Stopping service after it is restarted.")
-            else if (isStarting) Log.d(TAG, "Stop service ${serviceClass.simpleName}. Service is currently starting. Stopping service after it is started.")
+            if (restartInProcess) {
+                Log.d(TAG, "Stop service ${serviceClass.simpleName}. Service currently restarting. Stopping service after it is restarted.")
+            } else if (isStarting) Log.d(TAG, "Stop service ${serviceClass.simpleName}. Service is currently starting. Stopping service after it is started.")
         } else if (isRunning) {
             context.stopService(Intent(context, serviceClass))
             Log.d(TAG, "Stop service ${serviceClass.simpleName}")
@@ -61,7 +64,7 @@ class ForegroundServiceLauncher(private val serviceClass: Class<out Service>) {
                 val restartIntent = Intent(context, serviceClass).apply { block() }
                 val restartServicePI = PendingIntent.getService(context, 1, restartIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE)
 
-                val alarmManager: AlarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                val alarmManager: AlarmManager = context.getSystemService()!!
                 val calendar: Calendar = Calendar.getInstance()
                 calendar.timeInMillis = System.currentTimeMillis()
                 calendar.add(Calendar.SECOND, 2)
@@ -71,8 +74,9 @@ class ForegroundServiceLauncher(private val serviceClass: Class<out Service>) {
                 startService(context, block)
             }
         } else {
-            if (restartInProcess) Log.w(TAG, "Cannot restart service ${serviceClass.simpleName}. Service currently restarting...")
-            else if (isStarting) Log.w(TAG, "Cannot restart service ${serviceClass.simpleName}. Service is currently starting...")
+            if (restartInProcess) {
+                Log.w(TAG, "Cannot restart service ${serviceClass.simpleName}. Service currently restarting...")
+            } else if (isStarting) Log.w(TAG, "Cannot restart service ${serviceClass.simpleName}. Service is currently starting...")
         }
     }
 

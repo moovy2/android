@@ -12,16 +12,15 @@ class GeocodeSensorManager : SensorManager {
             "geocoded_location",
             "sensor",
             commonR.string.basic_sensor_name_geolocation,
-            commonR.string.sensor_description_geocoded_location
+            commonR.string.sensor_description_geocoded_location,
+            "mdi:map"
         )
     }
 
-    override val enabledByDefault: Boolean
-        get() = false
     override val name: Int
         get() = commonR.string.sensor_name_geolocation
 
-    override fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
+    override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
         return listOf()
     }
 

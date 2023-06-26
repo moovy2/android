@@ -7,24 +7,30 @@ import android.os.Bundle
 import android.text.Html.fromHtml
 import android.view.Menu
 import android.view.MenuItem
-import android.widget.SearchView
-import androidx.core.view.MenuItemCompat
+import androidx.appcompat.widget.SearchView
+import androidx.lifecycle.lifecycleScope
 import androidx.preference.Preference
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceFragmentCompat
+import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.R
-import io.homeassistant.companion.android.database.AppDatabase
 import io.homeassistant.companion.android.database.notification.NotificationDao
 import io.homeassistant.companion.android.database.notification.NotificationItem
+import kotlinx.coroutines.launch
 import java.util.Calendar
 import java.util.GregorianCalendar
+import javax.inject.Inject
 import io.homeassistant.companion.android.common.R as commonR
 
+@AndroidEntryPoint
 class NotificationHistoryFragment : PreferenceFragmentCompat() {
 
     companion object {
         private var filterValue = 25
     }
+
+    @Inject
+    lateinit var notificationDao: NotificationDao
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,7 +50,6 @@ class NotificationHistoryFragment : PreferenceFragmentCompat() {
         menu.findItem(R.id.last100)?.title = getString(commonR.string.last_num_notifications, 100)
 
         val prefCategory = findPreference<PreferenceCategory>("list_notifications")
-        val notificationDao = AppDatabase.getInstance(requireContext()).notificationDao()
         val allNotifications = notificationDao.getAll()
 
         if (allNotifications.isNullOrEmpty()) {
@@ -53,7 +58,7 @@ class NotificationHistoryFragment : PreferenceFragmentCompat() {
             menu.removeItem(R.id.action_delete)
         } else {
             val searchViewItem = menu.findItem(R.id.search_notifications)
-            val searchView: SearchView = MenuItemCompat.getActionView(searchViewItem) as SearchView
+            val searchView: SearchView = searchViewItem.actionView as SearchView
             searchView.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
                 override fun onQueryTextSubmit(query: String?): Boolean {
                     searchView.clearFocus()
@@ -65,8 +70,9 @@ class NotificationHistoryFragment : PreferenceFragmentCompat() {
                     var searchList: Array<NotificationItem> = emptyArray()
                     if (!query.isNullOrEmpty()) {
                         for (item in allNotifications) {
-                            if (item.message.contains(query, true))
+                            if (item.message.contains(query, true)) {
                                 searchList += item
+                            }
                         }
                         prefCategory?.title = getString(commonR.string.search_results)
                         reloadNotifications(searchList, prefCategory)
@@ -82,7 +88,6 @@ class NotificationHistoryFragment : PreferenceFragmentCompat() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         val prefCategory = findPreference<PreferenceCategory>("list_notifications")
-        val notificationDao = AppDatabase.getInstance(requireContext()).notificationDao()
         if (item.itemId in listOf(R.id.last25, R.id.last50, R.id.last100)) {
             filterValue = when (item.itemId) {
                 R.id.last25 -> 25
@@ -92,8 +97,9 @@ class NotificationHistoryFragment : PreferenceFragmentCompat() {
             }
             item.isChecked = !item.isChecked
             filterNotifications(filterValue, notificationDao, prefCategory)
-        } else if (item.itemId == R.id.action_delete)
+        } else if (item.itemId == R.id.action_delete) {
             deleteAllConfirmation(notificationDao)
+        }
         return super.onOptionsItemSelected(item)
     }
 
@@ -105,7 +111,6 @@ class NotificationHistoryFragment : PreferenceFragmentCompat() {
         super.onResume()
 
         activity?.title = getString(commonR.string.notifications)
-        val notificationDao = AppDatabase.getInstance(requireContext()).notificationDao()
         val notificationList = notificationDao.getLastItems(25)
 
         val prefCategory = findPreference<PreferenceCategory>("list_notifications")
@@ -131,9 +136,11 @@ class NotificationHistoryFragment : PreferenceFragmentCompat() {
         builder.setPositiveButton(
             commonR.string.confirm_positive
         ) { dialog, _ ->
-            notificationDao.deleteAll()
-            dialog.dismiss()
-            parentFragmentManager.popBackStack()
+            lifecycleScope.launch {
+                notificationDao.deleteAll()
+                dialog.dismiss()
+                parentFragmentManager.popBackStack()
+            }
         }
 
         builder.setNegativeButton(
@@ -154,7 +161,7 @@ class NotificationHistoryFragment : PreferenceFragmentCompat() {
                 val cal: Calendar = GregorianCalendar()
                 cal.timeInMillis = item.received
                 pref.key = item.id.toString()
-                pref.title = cal.time.toString()
+                pref.title = "${cal.time} - ${item.source}"
                 pref.summary = fromHtml(item.message)
                 pref.isIconSpaceReserved = false
 

@@ -3,8 +3,7 @@ package io.homeassistant.companion.android.launch
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.compose.setContent
-import androidx.activity.result.ActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.layout.Box
@@ -12,24 +11,32 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.CircularProgressIndicator
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import com.google.android.material.composethemeadapter.MdcTheme
+import com.google.accompanist.themeadapter.material.MdcTheme
 import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.BuildConfig
-import io.homeassistant.companion.android.common.data.authentication.AuthenticationRepository
 import io.homeassistant.companion.android.common.data.integration.DeviceRegistration
-import io.homeassistant.companion.android.common.data.integration.IntegrationRepository
-import io.homeassistant.companion.android.common.data.url.UrlRepository
-import io.homeassistant.companion.android.database.AppDatabase
-import io.homeassistant.companion.android.database.sensor.Sensor
-import io.homeassistant.companion.android.onboarding.OnboardingActivity
+import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.database.sensor.SensorDao
+import io.homeassistant.companion.android.database.server.Server
+import io.homeassistant.companion.android.database.server.ServerConnectionInfo
+import io.homeassistant.companion.android.database.server.ServerSessionInfo
+import io.homeassistant.companion.android.database.server.ServerType
+import io.homeassistant.companion.android.database.server.ServerUserInfo
+import io.homeassistant.companion.android.database.settings.WebsocketSetting
+import io.homeassistant.companion.android.onboarding.OnboardApp
 import io.homeassistant.companion.android.onboarding.getMessagingToken
 import io.homeassistant.companion.android.sensors.LocationSensorManager
+import io.homeassistant.companion.android.settings.SettingViewModel
+import io.homeassistant.companion.android.util.UrlUtil
 import io.homeassistant.companion.android.webview.WebViewActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import retrofit2.HttpException
 import javax.inject.Inject
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
 import io.homeassistant.companion.android.common.R as commonR
 
 @AndroidEntryPoint
@@ -43,21 +50,19 @@ class LaunchActivity : AppCompatActivity(), LaunchView {
     lateinit var presenter: LaunchPresenter
 
     @Inject
-    lateinit var urlRepository: UrlRepository
+    lateinit var serverManager: ServerManager
 
     @Inject
-    lateinit var authenticationRepository: AuthenticationRepository
-
-    @Inject
-    lateinit var integrationRepository: IntegrationRepository
+    lateinit var sensorDao: SensorDao
 
     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
 
-    private val registerActivityResult =
-        registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult(),
-            this::onOnboardingComplete
-        )
+    private val settingViewModel: SettingViewModel by viewModels()
+
+    private val registerActivityResult = registerForActivityResult(
+        OnboardApp(),
+        this::onOnboardingComplete
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,8 +87,7 @@ class LaunchActivity : AppCompatActivity(), LaunchView {
     }
 
     override fun displayOnBoarding(sessionConnected: Boolean) {
-        val intent = OnboardingActivity.newInstance(this)
-        registerActivityResult.launch(intent)
+        registerActivityResult.launch(OnboardApp.Input())
     }
 
     override fun onDestroy() {
@@ -91,27 +95,24 @@ class LaunchActivity : AppCompatActivity(), LaunchView {
         super.onDestroy()
     }
 
-    private fun onOnboardingComplete(result: ActivityResult) {
+    private fun onOnboardingComplete(result: OnboardApp.Output?) {
         mainScope.launch {
-            if (result.data != null) {
-                val intent = result.data!!
-                val url = intent.getStringExtra("URL").toString()
-                val authCode = intent.getStringExtra("AuthCode").toString()
-                val deviceName = intent.getStringExtra("DeviceName").toString()
-                val deviceTrackingEnabled = intent.getBooleanExtra("LocationTracking", false)
+            if (result != null) {
+                val (url, authCode, deviceName, deviceTrackingEnabled, notificationsEnabled) = result
                 val messagingToken = getMessagingToken()
-                if (messagingToken.isNullOrBlank()) {
+                if (messagingToken.isBlank() && BuildConfig.FLAVOR == "full") {
                     AlertDialog.Builder(this@LaunchActivity)
                         .setTitle(commonR.string.firebase_error_title)
                         .setMessage(commonR.string.firebase_error_message)
-                        .setPositiveButton(commonR.string.skip) { _, _ ->
+                        .setPositiveButton(commonR.string.continue_connect) { _, _ ->
                             mainScope.launch {
                                 registerAndOpenWebview(
                                     url,
                                     authCode,
                                     deviceName,
                                     messagingToken,
-                                    deviceTrackingEnabled
+                                    deviceTrackingEnabled,
+                                    notificationsEnabled
                                 )
                             }
                         }
@@ -122,11 +123,13 @@ class LaunchActivity : AppCompatActivity(), LaunchView {
                         authCode,
                         deviceName,
                         messagingToken,
-                        deviceTrackingEnabled
+                        deviceTrackingEnabled,
+                        notificationsEnabled
                     )
                 }
-            } else
+            } else {
                 Log.e(TAG, "onOnboardingComplete: Activity result returned null intent data")
+            }
         }
     }
 
@@ -135,37 +138,93 @@ class LaunchActivity : AppCompatActivity(), LaunchView {
         authCode: String,
         deviceName: String,
         messagingToken: String,
-        deviceTrackingEnabled: Boolean
+        deviceTrackingEnabled: Boolean,
+        notificationsEnabled: Boolean
     ) {
-        urlRepository.saveUrl(url)
-        authenticationRepository.registerAuthorizationCode(authCode)
-        integrationRepository.registerDevice(
-            DeviceRegistration(
-                "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-                deviceName,
-                messagingToken
+        var serverId: Int? = null
+        try {
+            val formattedUrl = UrlUtil.formattedUrlString(url)
+            val server = Server(
+                _name = "",
+                type = ServerType.TEMPORARY,
+                connection = ServerConnectionInfo(
+                    externalUrl = formattedUrl
+                ),
+                session = ServerSessionInfo(),
+                user = ServerUserInfo()
             )
-        )
-        setLocationTracking(deviceTrackingEnabled)
+            serverId = serverManager.addServer(server)
+            serverManager.authenticationRepository(serverId).registerAuthorizationCode(authCode)
+            serverManager.integrationRepository(serverId).registerDevice(
+                DeviceRegistration(
+                    "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                    deviceName,
+                    messagingToken
+                )
+            )
+            serverId = serverManager.convertTemporaryServer(serverId)
+        } catch (e: Exception) {
+            // Fatal errors: if one of these calls fail, the app cannot proceed.
+            // Show an error, clean up the session and require new registration.
+            // Because this runs after the webview, the only expected errors are:
+            // - missing mobile_app integration
+            // - system version related in OkHttp (cryptography)
+            // - general connection issues (offline/unknown)
+            Log.e(TAG, "Exception while registering", e)
+            try {
+                if (serverId != null) {
+                    serverManager.authenticationRepository(serverId).revokeSession()
+                    serverManager.removeServer(serverId)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Can't revoke session", e)
+            }
+            AlertDialog.Builder(this@LaunchActivity)
+                .setTitle(commonR.string.error_connection_failed)
+                .setMessage(
+                    when {
+                        e is HttpException && e.code() == 404 -> commonR.string.error_with_registration
+                        e is SSLHandshakeException -> commonR.string.webview_error_FAILED_SSL_HANDSHAKE
+                        e is SSLException -> commonR.string.webview_error_SSL_INVALID
+                        else -> commonR.string.webview_error
+                    }
+                )
+                .setCancelable(false)
+                .setPositiveButton(commonR.string.ok) { dialog, _ ->
+                    dialog.dismiss()
+                    displayOnBoarding(false)
+                }
+                .show()
+            return
+        }
+        serverId?.let {
+            setLocationTracking(serverId, deviceTrackingEnabled)
+            setNotifications(serverId, notificationsEnabled)
+        }
         displayWebview()
     }
 
-    private fun setLocationTracking(enabled: Boolean) {
-        val sensorDao = AppDatabase.getInstance(applicationContext).sensorDao()
-        arrayOf(
-            LocationSensorManager.backgroundLocation,
-            LocationSensorManager.zoneLocation,
-            LocationSensorManager.singleAccurateLocation
-        ).forEach { basicSensor ->
-            var sensorEntity = sensorDao.get(basicSensor.id)
-            if (sensorEntity != null) {
-                sensorEntity.enabled = enabled
-                sensorEntity.lastSentState = ""
-                sensorDao.update(sensorEntity)
-            } else {
-                sensorEntity = Sensor(basicSensor.id, enabled, false, "")
-                sensorDao.add(sensorEntity)
-            }
+    private suspend fun setLocationTracking(serverId: Int, enabled: Boolean) {
+        sensorDao.setSensorsEnabled(
+            sensorIds = listOf(
+                LocationSensorManager.backgroundLocation.id,
+                LocationSensorManager.zoneLocation.id,
+                LocationSensorManager.singleAccurateLocation.id
+            ),
+            serverId = serverId,
+            enabled = enabled
+        )
+    }
+
+    private fun setNotifications(serverId: Int, enabled: Boolean) {
+        // Full: this only refers to the system permission on Android 13+ so no changes are necessary.
+        // Minimal: change persistent connection setting to reflect preference.
+        if (BuildConfig.FLAVOR != "full") {
+            settingViewModel.getSetting(serverId) // Required to create initial value
+            settingViewModel.updateWebsocketSetting(
+                serverId,
+                if (enabled) WebsocketSetting.ALWAYS else WebsocketSetting.NEVER
+            )
         }
     }
 }

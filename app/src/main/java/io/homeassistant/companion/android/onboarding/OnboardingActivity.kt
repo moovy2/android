@@ -1,32 +1,26 @@
 package io.homeassistant.companion.android.onboarding
 
-import android.content.Context
-import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.viewModels
-import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationManagerCompat
+import androidx.fragment.app.commit
 import dagger.hilt.android.AndroidEntryPoint
+import io.homeassistant.companion.android.BaseActivity
 import io.homeassistant.companion.android.BuildConfig
 import io.homeassistant.companion.android.R
+import io.homeassistant.companion.android.onboarding.authentication.AuthenticationFragment
+import io.homeassistant.companion.android.onboarding.discovery.DiscoveryFragment
+import io.homeassistant.companion.android.onboarding.manual.ManualSetupFragment
 import io.homeassistant.companion.android.onboarding.welcome.WelcomeFragment
 
 @AndroidEntryPoint
-class OnboardingActivity : AppCompatActivity() {
+class OnboardingActivity : BaseActivity() {
 
     companion object {
         private const val AUTHENTICATION_FRAGMENT = "authentication_fragment"
-        private const val TAG = "OnboardingActivity"
-        private const val EXTRA_DEFAULT_DEVICE_NAME = "extra_default_device_name"
-        private const val EXTRA_LOCATION_TRACKING_POSSIBLE = "location_tracking_possible"
-
-        fun newInstance(context: Context, defaultDeviceName: String = Build.MODEL, locationTrackingPossible: Boolean = BuildConfig.FLAVOR == "full"): Intent {
-            return Intent(context, OnboardingActivity::class.java).apply {
-                putExtra(EXTRA_DEFAULT_DEVICE_NAME, defaultDeviceName)
-                putExtra(EXTRA_LOCATION_TRACKING_POSSIBLE, locationTrackingPossible)
-            }
-        }
     }
 
     private val viewModel by viewModels<OnboardingViewModel>()
@@ -34,20 +28,59 @@ class OnboardingActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_onboarding)
-        viewModel.deviceName.value = intent.getStringExtra(EXTRA_DEFAULT_DEVICE_NAME) ?: Build.MODEL
-        viewModel.locationTrackingPossible.value = intent.getBooleanExtra(EXTRA_LOCATION_TRACKING_POSSIBLE, false)
 
-        supportFragmentManager
-            .beginTransaction()
-            .add(R.id.content, WelcomeFragment::class.java, null)
-            .commit()
-    }
-
-    override fun onBackPressed() {
-        if (supportFragmentManager.backStackEntryCount > 0) {
-            supportFragmentManager.popBackStack()
+        val input = OnboardApp.parseInput(intent)
+        viewModel.deviceName.value = input.defaultDeviceName
+        viewModel.locationTrackingPossible.value = input.locationTrackingPossible
+        viewModel.notificationsPossible.value = input.notificationsPossible
+        viewModel.notificationsEnabled = if (input.notificationsPossible) {
+            BuildConfig.FLAVOR == "full" &&
+                (
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                        NotificationManagerCompat.from(this).areNotificationsEnabled()
+                    )
         } else {
-            super.onBackPressed()
+            false
+        }
+        viewModel.deviceIsWatch = input.isWatch
+
+        if (savedInstanceState == null) {
+            supportFragmentManager.commit {
+                add(R.id.content, WelcomeFragment::class.java, null)
+            }
+            if (input.url != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    supportFragmentManager.commit {
+                        replace(R.id.content, DiscoveryFragment::class.java, null)
+                        addToBackStack(null)
+                    }
+                }
+                if (input.url.isNotBlank() || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                    viewModel.onManualUrlUpdated(input.url)
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || !viewModel.manualContinueEnabled) {
+                        supportFragmentManager.commit {
+                            replace(R.id.content, ManualSetupFragment::class.java, null)
+                            addToBackStack(null)
+                        }
+                    }
+                    if (viewModel.manualContinueEnabled) {
+                        supportFragmentManager.commit {
+                            replace(R.id.content, AuthenticationFragment::class.java, null)
+                            addToBackStack(null)
+                        }
+                    }
+                }
+            }
+        }
+
+        val onBackPressed = object : OnBackPressedCallback(supportFragmentManager.backStackEntryCount > 0) {
+            override fun handleOnBackPressed() {
+                supportFragmentManager.popBackStack()
+            }
+        }
+        onBackPressedDispatcher.addCallback(this, onBackPressed)
+        supportFragmentManager.addOnBackStackChangedListener {
+            onBackPressed.isEnabled = supportFragmentManager.backStackEntryCount > 0
         }
     }
 

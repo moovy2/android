@@ -3,37 +3,21 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <PreferenceCategory
-        android:title="@string/pref_connection_title">
-        <EditTextPreference
-            android:key="connection_external"
-            android:icon="@drawable/ic_globe"
-            android:title="@string/pref_connection_url"
-            app:useSimpleSummaryProvider="true"/>
-        <io.homeassistant.companion.android.settings.ssid.SsidPreference
-            android:key="connection_internal_ssids"
-            android:icon="@drawable/ic_wifi"
-            android:title="@string/pref_connection_wifi"
-            android:dialogTitle="@string/manage_ssids"
-            android:positiveButtonText="@string/save"
-            android:negativeButtonText="@string/cancel"
-            app:summaryMaxLines="1"/>
-        <EditTextPreference
-            android:key="connection_internal"
-            android:title="@string/pref_connection_internal"
-            app:useSimpleSummaryProvider="true"/>
-        <SwitchPreference
-            android:key="prioritize_internal"
-            android:title="@string/prioritize_internal"
-            android:icon="@drawable/ic_priority"
-            android:summary="@string/prioritize_internal_summary" />
-    </PreferenceCategory>
-    <PreferenceCategory
-        android:title="@string/device_registration">
-        <EditTextPreference
-            android:key="registration_name"
-            android:icon="@drawable/ic_edit"
-            android:title="@string/device_name"
-            app:useSimpleSummaryProvider="true"/>
+        android:key="servers_devices_category"
+        android:title="@string/servers_devices_category">
+        <!-- Servers will be added at runtime -->
+        <Preference
+            android:key="server_add"
+            android:icon="@drawable/ic_plus"
+            android:order="998"
+            android:title="@string/server_add" />
+        <Preference
+            android:key="wear_settings"
+            app:isPreferenceVisible="false"
+            android:title="@string/wear_os_settings_title"
+            android:icon="@drawable/ic_baseline_watch_24"
+            android:order="999"
+            android:summary="@string/wear_os_settings_summary" />
     </PreferenceCategory>
     <PreferenceCategory
         android:title="@string/sensors">
@@ -42,30 +26,11 @@
             android:icon="@drawable/leak"
             android:title="@string/sensor_title"
             android:summary="@string/sensor_summary"/>
-    </PreferenceCategory>
-    <PreferenceCategory
-        android:title="@string/security">
-        <SwitchPreference
-            android:key="app_lock"
-            android:icon="@drawable/ic_lock"
-            android:title="@string/lock_title"
-            android:summary="@string/lock_summary"/>
-        <EditTextPreference
-            android:key="session_timeout"
-            android:icon="@drawable/ic_timeout"
-            android:title="@string/session_timeout_title"
-            app:isPreferenceVisible="false"
-            app:useSimpleSummaryProvider="true"/>
-    </PreferenceCategory>
-    <PreferenceCategory
-        android:key="wear_category"
-        app:isPreferenceVisible="false"
-        android:title="@string/wear_os_category">
         <Preference
-            android:key="wear_settings"
-            android:title="@string/wear_os_settings_title"
-            android:icon="@drawable/ic_baseline_watch_24"
-            android:summary="@string/wear_os_settings_summary" />
+            android:key="sensor_update_frequency"
+            android:icon="@drawable/ic_clock_fast"
+            android:title="@string/sensor_update_frequency"
+            android:summary="@string/sensor_update_frequency_summary" />
     </PreferenceCategory>
     <PreferenceCategory
         android:title="@string/other_settings">
@@ -74,16 +39,39 @@
             android:icon="@drawable/ic_fullscreen"
             android:title="@string/fullscreen"
             android:summary="@string/fullscreen_def"/>
+        <ListPreference
+            android:key="screen_orientation"
+            android:defaultValue="@string/screen_orientation_option_value_system"
+            android:entries="@array/pref_screen_orientation_option_labels"
+            android:entryValues="@array/pref_screen_orientation_option_values"
+            android:icon="@drawable/ic_screen_orientation"
+            android:title="@string/screen_orientation_title_settings"
+            app:useSimpleSummaryProvider="true"/>
         <SwitchPreference
             android:key="keep_screen_on"
             android:icon="@drawable/ic_phone_check"
             android:title="@string/keep_screen_on"
             android:summary="@string/keep_screen_on_def"/>
         <SwitchPreference
+            android:key="pinch_to_zoom"
+            android:icon="@drawable/ic_gesture_pinch"
+            android:title="@string/pinch_to_zoom"
+            android:summary="@string/pinch_to_zoom_def"/>
+        <SwitchPreference
             android:key="autoplay_video"
             android:icon="@drawable/ic_baseline_video_settings_24"
             android:title="@string/autoplay_video"
             android:summary="@string/autoplay_video_summary" />
+        <SwitchPreference
+            android:key="always_show_first_view_on_app_start"
+            android:icon="@drawable/ic_home_variant_outline"
+            android:title="@string/always_show_first_view_on_app_start"
+            android:summary="@string/always_show_first_view_on_app_start_summary" />
+        <SwitchPreference
+            android:key="webview_debug"
+            android:icon="@drawable/ic_android_debug_bridge"
+            android:title="@string/remote_debugging"
+            android:summary="@string/remote_debugging_summary" />
         <Preference
             android:key="nfc_tags"
             android:icon="@drawable/ic_nfc"
@@ -112,6 +100,18 @@
         android:key="notifications"
         app:isPreferenceVisible="false">
         <Preference
+            android:key="notification_permission"
+            android:title="@string/notification_permission"
+            android:summary="@string/notification_permission_summary"
+            app:isPreferenceVisible="false"
+            android:icon="@drawable/ic_notification_off" />
+        <Preference
+            android:key="notification_channels"
+            android:title="@string/notification_channels"
+            android:summary="@string/notification_channels_summary"
+            app:isPreferenceVisible="false"
+            android:icon="@drawable/ic_notification_channel" />
+        <Preference
             android:key="notification_history"
             app:isPreferenceVisible="false"
             android:title="@string/notification_history"
@@ -124,6 +124,16 @@
             app:enableCopying="true"
             android:icon="@drawable/ic_notifications"
             android:summary="@string/rate_limit_summary"/>
+    </PreferenceCategory>
+    <PreferenceCategory
+        android:key="device_controls"
+        android:title="@string/controls_setting_category"
+        app:isPreferenceVisible="false">
+        <Preference
+            android:key="manage_device_controls"
+            android:icon="@drawable/ic_home_variant_outline"
+            android:title="@string/controls_setting_title"
+            android:summary="@string/controls_setting_summary" />
     </PreferenceCategory>
     <PreferenceCategory
         android:key="quick_settings"
@@ -174,9 +184,14 @@
     <PreferenceCategory
         android:title="@string/app_version_info">
         <Preference
-            android:key="changelog"
+            android:key="changelog_prompt"
             android:icon="@drawable/ic_changelog"
+            android:title="@string/show_changelog"
+            android:summary="@string/show_changelog_summary" />
+        <Preference
+            android:key="changelog_github"
             android:title="@string/changelog"
+            android:icon="@drawable/ic_github"
             android:summary="https://github.com/home-assistant/android/releases"
             app:enableCopying="true" />
         <Preference

@@ -4,10 +4,9 @@ import android.os.Build
 import android.webkit.CookieManager
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.databind.PropertyNamingStrategy
+import com.fasterxml.jackson.databind.PropertyNamingStrategies
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.homeassistant.companion.android.common.BuildConfig
-import io.homeassistant.companion.android.common.data.url.UrlRepository
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -15,16 +14,17 @@ import retrofit2.converter.jackson.JacksonConverterFactory
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
-class HomeAssistantApis @Inject constructor(private val urlRepository: UrlRepository) {
+class HomeAssistantApis @Inject constructor(
+    private val tlsHelper: TLSHelper
+) {
     companion object {
         private const val LOCAL_HOST = "http://localhost/"
-        private const val USER_AGENT = "User-Agent"
-        private const val USER_AGENT_STRING = "HomeAssistant/Android"
+        const val USER_AGENT = "User-Agent"
+        val USER_AGENT_STRING = "Home Assistant/${BuildConfig.VERSION_NAME} (Android ${Build.VERSION.RELEASE}; ${Build.MODEL})"
 
         private val CALL_TIMEOUT = 30L
         private val READ_TIMEOUT = 30L
     }
-
     private fun configureOkHttpClient(builder: OkHttpClient.Builder): OkHttpClient.Builder {
         if (BuildConfig.DEBUG) {
             builder.addInterceptor(
@@ -37,7 +37,7 @@ class HomeAssistantApis @Inject constructor(private val urlRepository: UrlReposi
             it.proceed(
                 it.request()
                     .newBuilder()
-                    .header(USER_AGENT, "$USER_AGENT_STRING ${Build.MODEL} ${BuildConfig.VERSION_NAME}")
+                    .header(USER_AGENT, USER_AGENT_STRING)
                     .build()
             )
         }
@@ -56,6 +56,8 @@ class HomeAssistantApis @Inject constructor(private val urlRepository: UrlReposi
         builder.callTimeout(CALL_TIMEOUT, TimeUnit.SECONDS)
         builder.readTimeout(READ_TIMEOUT, TimeUnit.SECONDS)
 
+        tlsHelper.setupOkHttpClientSSLSocketFactory(builder)
+
         return builder
     }
 
@@ -65,7 +67,7 @@ class HomeAssistantApis @Inject constructor(private val urlRepository: UrlReposi
             JacksonConverterFactory.create(
                 ObjectMapper()
                     .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                    .setPropertyNamingStrategy(PropertyNamingStrategy.SNAKE_CASE)
+                    .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
                     .registerKotlinModule()
             )
         )

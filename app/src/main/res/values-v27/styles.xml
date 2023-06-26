@@ -6,4 +6,17 @@
         <item name="android:windowLightStatusBar">@bool/isLightMode</item>
         <item name="android:windowLightNavigationBar">@bool/isLightMode</item>
     </style>
+
+    <!-- Only start overriding navigation bar on API 27 because android:windowLightNavigationBar isn't available before this version -->
+    <style name="Theme.HomeAssistant.Config" parent="Theme.HomeAssistant">
+        <item name="android:statusBarColor">@color/colorBackground</item>
+        <item name="android:navigationBarColor">@color/colorBackground</item>
+        <item name="android:windowLightStatusBar">@bool/isLightMode</item>
+        <item name="android:windowLightNavigationBar">@bool/isLightMode</item>
+    </style>
+
+    <style name="ThemeOverlay.HomeAssistant.BottomSheetDialog" parent="ThemeOverlay.HomeAssistant.BottomSheetDialog.Base">
+        <item name="android:navigationBarColor">@color/colorSurface</item>
+        <item name="android:windowLightNavigationBar">@bool/isLightMode</item>
+    </style>
 </resources>

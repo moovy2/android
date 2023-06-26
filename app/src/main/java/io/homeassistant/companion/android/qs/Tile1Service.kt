@@ -8,10 +8,11 @@ import androidx.annotation.RequiresApi
 class Tile1Service : TileExtensions() {
 
     override fun getTile(): Tile? {
-        return if (qsTile != null)
+        return if (qsTile != null) {
             qsTile
-        else
+        } else {
             null
+        }
     }
 
     override fun getTileId(): String {
@@ -19,6 +20,6 @@ class Tile1Service : TileExtensions() {
     }
 
     companion object {
-        private const val TILE_ID = "tile_1"
+        const val TILE_ID = "tile_1"
     }
 }

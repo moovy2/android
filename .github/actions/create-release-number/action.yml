@@ -21,7 +21,7 @@ runs:
       run: |
         COMMITS=`git rev-list --count HEAD`
         TAGS=`git tag | grep -v beta | wc -l`
-        VC=$(((COMMITS+TAGS) << 1))
+        VC=$((((COMMITS+TAGS) * 3) << 1))
         HASH=`git rev-parse --short HEAD`
         if [ "${{inputs.beta}}" = "true" ]; then
            VERSION=beta-$VC-$HASH
@@ -32,5 +32,5 @@ runs:
         echo Number Tags $TAGS
         echo Version $VERSION
         echo Version Code $VC
-        echo ::set-output name=version::$VERSION
-        echo ::set-output name=version-code::$VC
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "version-code=$VC" >> $GITHUB_OUTPUT

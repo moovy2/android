@@ -1,16 +1,22 @@
 package io.homeassistant.companion.android.sensors
 
 import android.Manifest
+import android.app.UiModeManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.res.Configuration
 import android.media.MediaMetadata
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.os.Build
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.getSystemService
 import io.homeassistant.companion.android.common.sensors.SensorManager
+import io.homeassistant.companion.android.database.sensor.SensorSettingType
 import io.homeassistant.companion.android.common.R as commonR
 
 class NotificationSensorManager : NotificationListenerService(), SensorManager {
@@ -25,29 +31,36 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
             "sensor",
             commonR.string.basic_sensor_name_last_notification,
             commonR.string.sensor_description_last_notification,
-            docsLink = "https://companion.home-assistant.io/docs/core/sensors#last-notification"
+            "mdi:bell-ring",
+            docsLink = "https://companion.home-assistant.io/docs/core/sensors#last-notification",
+            updateType = SensorManager.BasicSensor.UpdateType.INTENT
         )
         val lastRemovedNotification = SensorManager.BasicSensor(
             "last_removed_notification",
             "sensor",
             commonR.string.basic_sensor_name_last_removed_notification,
             commonR.string.sensor_description_last_removed_notification,
-            docsLink = "https://companion.home-assistant.io/docs/core/sensors#last-removed-notification"
+            "mdi:bell-ring",
+            docsLink = "https://companion.home-assistant.io/docs/core/sensors#last-removed-notification",
+            updateType = SensorManager.BasicSensor.UpdateType.INTENT
         )
         val activeNotificationCount = SensorManager.BasicSensor(
             "active_notification_count",
             "sensor",
             commonR.string.basic_sensor_name_active_notification_count,
             commonR.string.sensor_description_active_notification_count,
+            "mdi:bell-ring",
             unitOfMeasurement = "notifications",
             docsLink = "https://companion.home-assistant.io/docs/core/sensors#active-notification-count",
-            stateClass = SensorManager.STATE_CLASS_MEASUREMENT
+            stateClass = SensorManager.STATE_CLASS_MEASUREMENT,
+            updateType = SensorManager.BasicSensor.UpdateType.INTENT
         )
         private val mediaSession = SensorManager.BasicSensor(
             "media_session",
             "sensor",
             commonR.string.basic_sensor_name_media_session,
             commonR.string.sensor_description_media_session,
+            "mdi:play-circle",
             docsLink = "https://companion.home-assistant.io/docs/core/sensors#media-session-sensor"
         )
     }
@@ -55,13 +68,15 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
     override fun docsLink(): String {
         return "https://companion.home-assistant.io/docs/core/sensors#notification-sensors"
     }
+    override fun hasSensor(context: Context): Boolean {
+        val uiManager = context.getSystemService<UiModeManager>()
+        return uiManager?.currentModeType != Configuration.UI_MODE_TYPE_TELEVISION
+    }
     override val name: Int
         get() = commonR.string.sensor_name_last_notification
-    override fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
+    override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
         return listOf(lastNotification, lastRemovedNotification, activeNotificationCount, mediaSession)
     }
-    override val enabledByDefault: Boolean
-        get() = false
 
     override fun requiredPermissions(sensorId: String): Array<String> {
         return arrayOf(Manifest.permission.BIND_NOTIFICATION_LISTENER_SERVICE)
@@ -92,24 +107,24 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
 
         updateActiveNotificationCount()
 
-        if (!isEnabled(applicationContext, lastNotification.id))
+        if (!isEnabled(applicationContext, lastNotification)) {
             return
+        }
 
         val allowPackages = getSetting(
             applicationContext,
             lastNotification,
             SETTING_ALLOW_LIST,
-            "list-apps",
-            ""
+            SensorSettingType.LIST_APPS,
+            default = ""
         ).split(", ").filter { it.isNotBlank() }
 
-        val disableAllowListRequirement = getSetting(
+        val disableAllowListRequirement = getToggleSetting(
             applicationContext,
             lastNotification,
             SETTING_DISABLE_ALLOW_LIST,
-            "toggle",
-            "false"
-        ).toBoolean()
+            default = false
+        )
 
         if (sbn.packageName == application.packageName ||
             (allowPackages.isNotEmpty() && sbn.packageName !in allowPackages) ||
@@ -118,13 +133,18 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
             return
         }
 
-        val attr = sbn.notification.extras.keySet()
-            .map { it to sbn.notification.extras.get(it) }
-            .toMap()
+        val attr = mappedBundle(sbn.notification.extras).orEmpty()
             .plus("package" to sbn.packageName)
             .plus("post_time" to sbn.postTime)
             .plus("is_clearable" to sbn.isClearable)
             .plus("is_ongoing" to sbn.isOngoing)
+            .plus("group_id" to sbn.notification.group)
+            .plus("category" to sbn.notification.category)
+            .toMutableMap()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            attr["channel_id"] = sbn.notification.channelId
+        }
 
         // Attempt to use the text of the notification but fallback to package name if all else fails.
         val state = attr["android.text"] ?: attr["android.title"] ?: sbn.packageName
@@ -133,12 +153,13 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
             applicationContext,
             lastNotification,
             state.toString().take(255),
-            "mdi:bell-ring",
-            attr
+            lastNotification.statelessIcon,
+            attr,
+            forceUpdate = true
         )
 
         // Need to send update!
-        SensorWorker.start(applicationContext)
+        SensorReceiver.updateAllSensors(applicationContext)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -146,24 +167,24 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
 
         updateActiveNotificationCount()
 
-        if (!isEnabled(applicationContext, lastRemovedNotification.id))
+        if (!isEnabled(applicationContext, lastRemovedNotification)) {
             return
+        }
 
         val allowPackages = getSetting(
             applicationContext,
             lastRemovedNotification,
             SETTING_ALLOW_LIST,
-            "list-apps",
-            ""
+            SensorSettingType.LIST_APPS,
+            default = ""
         ).split(", ").filter { it.isNotBlank() }
 
-        val disableAllowListRequirement = getSetting(
+        val disableAllowListRequirement = getToggleSetting(
             applicationContext,
             lastRemovedNotification,
             SETTING_DISABLE_ALLOW_LIST,
-            "toggle",
-            "false"
-        ).toBoolean()
+            default = false
+        )
 
         if (sbn.packageName == application.packageName ||
             (allowPackages.isNotEmpty() && sbn.packageName !in allowPackages) ||
@@ -172,13 +193,18 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
             return
         }
 
-        val attr = sbn.notification.extras.keySet()
-            .map { it to sbn.notification.extras.get(it) }
-            .toMap()
+        val attr = mappedBundle(sbn.notification.extras).orEmpty()
             .plus("package" to sbn.packageName)
             .plus("post_time" to sbn.postTime)
             .plus("is_clearable" to sbn.isClearable)
             .plus("is_ongoing" to sbn.isOngoing)
+            .plus("group_id" to sbn.notification.group)
+            .plus("category" to sbn.notification.category)
+            .toMutableMap()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            attr["channel_id"] = sbn.notification.channelId
+        }
 
         // Attempt to use the text of the notification but fallback to package name if all else fails.
         val state = attr["android.text"] ?: attr["android.title"] ?: sbn.packageName
@@ -187,33 +213,39 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
             applicationContext,
             lastRemovedNotification,
             state.toString().take(255),
-            "mdi:bell-ring",
-            attr
+            lastRemovedNotification.statelessIcon,
+            attr,
+            forceUpdate = true
         )
 
         // Need to send update!
-        SensorWorker.start(applicationContext)
+        SensorReceiver.updateAllSensors(applicationContext)
     }
 
     private fun updateActiveNotificationCount() {
-        if (!isEnabled(applicationContext, activeNotificationCount.id) || !listenerConnected)
+        if (!isEnabled(applicationContext, activeNotificationCount) || !listenerConnected) {
             return
+        }
 
         try {
             val attr: MutableMap<String, Any?> = mutableMapOf()
             for (item in activeNotifications) {
-                attr += item.notification.extras.keySet()
-                    .map { it + "_" + item.packageName to item.notification.extras.get(it) }
-                    .toMap()
-                    .plus(item.packageName + "_" + item.id + "_post_time" to item.postTime)
-                    .plus(item.packageName + "_" + item.id + "_is_ongoing" to item.isOngoing)
-                    .plus(item.packageName + "_" + item.id + "_is_clearable" to item.isClearable)
+                attr += mappedBundle(item.notification.extras, "_${item.packageName}_${item.id}").orEmpty()
+                    .plus("${item.packageName}_${item.id}_post_time" to item.postTime)
+                    .plus("${item.packageName}_${item.id}_is_ongoing" to item.isOngoing)
+                    .plus("${item.packageName}_${item.id}_is_clearable" to item.isClearable)
+                    .plus("${item.packageName}_${item.id}_group_id" to item.notification.group)
+                    .plus("${item.packageName}_${item.id}_category" to item.notification.category)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    attr["${item.packageName}_${item.id}_channel_id"] = item.notification.channelId
+                }
             }
             onSensorUpdated(
                 applicationContext,
                 activeNotificationCount,
                 activeNotifications.size,
-                "mdi:bell-ring",
+                activeNotificationCount.statelessIcon,
                 attr
             )
         } catch (e: Exception) {
@@ -222,15 +254,15 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
     }
 
     private fun updateMediaSession(context: Context) {
-        if (!isEnabled(context, mediaSession.id))
+        if (!isEnabled(context, mediaSession)) {
             return
+        }
 
-        val mediaSessionManager = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+        val mediaSessionManager = context.getSystemService<MediaSessionManager>()!!
         val mediaList = mediaSessionManager.getActiveSessions(ComponentName(context, NotificationSensorManager::class.java))
         val sessionCount = mediaList.size
         val primaryPlaybackState = if (sessionCount > 0) getPlaybackState(mediaList[0].playbackState?.state) else "Unavailable"
         val attr: MutableMap<String, Any?> = mutableMapOf()
-        val icon = "mdi:play-circle"
         if (mediaList.size > 0) {
             for (item in mediaList) {
                 attr += mapOf(
@@ -249,7 +281,7 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
             context,
             mediaSession,
             primaryPlaybackState,
-            icon,
+            mediaSession.statelessIcon,
             attr
         )
     }
@@ -269,6 +301,41 @@ class NotificationSensorManager : NotificationListenerService(), SensorManager {
             PlaybackState.STATE_SKIPPING_TO_PREVIOUS -> "Skip to Previous"
             PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM -> "Skip to Queue Item"
             else -> "Unknown"
+        }
+    }
+
+    /**
+     * Returns the values of a bundle as a key/value map for use as a sensor's attributes.
+     * Arrays are converted to lists to make them human readable.
+     * Bundles inside the given bundle will also be mapped as a key/value map.
+     */
+    private fun mappedBundle(bundle: Bundle, keySuffix: String = ""): Map<String, Any?>? {
+        return try {
+            bundle.keySet().associate { key ->
+                val keyValue = when (val value = bundle.get(key)) {
+                    is Array<*> -> {
+                        if (value.all { it is Bundle }) {
+                            value.map { mappedBundle(it as Bundle) ?: value }
+                        } else {
+                            value.toList()
+                        }
+                    }
+                    is BooleanArray -> value.toList()
+                    is Bundle -> mappedBundle(value) ?: value
+                    is ByteArray -> value.toList()
+                    is CharArray -> value.toList()
+                    is DoubleArray -> value.toList()
+                    is FloatArray -> value.toList()
+                    is IntArray -> value.toList()
+                    is LongArray -> value.toList()
+                    is ShortArray -> value.toList()
+                    else -> value
+                }
+                "${key}$keySuffix" to keyValue
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception while trying to map notification bundle", e)
+            null
         }
     }
 }

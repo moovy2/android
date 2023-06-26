@@ -1,16 +1,12 @@
 package io.homeassistant.companion.android.common.data.authentication
 
-import io.homeassistant.companion.android.common.data.authentication.impl.entities.LoginFlowCreateEntry
-import io.homeassistant.companion.android.common.data.authentication.impl.entities.LoginFlowInit
-import java.net.URL
+import dagger.assisted.AssistedFactory
+import io.homeassistant.companion.android.common.data.authentication.impl.AuthenticationRepositoryImpl
 
 interface AuthenticationRepository {
 
-    suspend fun initiateLoginFlow(): LoginFlowInit
-
-    suspend fun loginAuthentication(flowId: String, username: String, password: String): LoginFlowCreateEntry
-
     suspend fun registerAuthorizationCode(authorizationCode: String)
+    suspend fun registerRefreshToken(refreshToken: String)
 
     suspend fun retrieveExternalAuthentication(forceRefresh: Boolean): String
 
@@ -18,12 +14,22 @@ interface AuthenticationRepository {
 
     suspend fun revokeSession()
 
-    suspend fun getSessionState(): SessionState
+    suspend fun deletePreferences()
 
-    suspend fun buildAuthenticationUrl(callbackUrl: String): URL
+    fun getSessionState(): SessionState
+
+    suspend fun buildAuthenticationUrl(baseUrl: String): String
 
     suspend fun buildBearerToken(): String
 
     suspend fun setLockEnabled(enabled: Boolean)
+    suspend fun setLockHomeBypassEnabled(enabled: Boolean)
+    suspend fun isLockEnabledRaw(): Boolean
+    suspend fun isLockHomeBypassEnabled(): Boolean
     suspend fun isLockEnabled(): Boolean
+}
+
+@AssistedFactory
+interface AuthenticationRepositoryFactory {
+    fun create(serverId: Int): AuthenticationRepositoryImpl
 }

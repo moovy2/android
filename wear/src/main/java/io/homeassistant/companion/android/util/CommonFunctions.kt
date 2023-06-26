@@ -4,30 +4,54 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import com.mikepenz.iconics.IconicsDrawable
 import com.mikepenz.iconics.typeface.IIcon
-import com.mikepenz.iconics.typeface.library.community.material.CommunityMaterial
+import io.homeassistant.companion.android.common.data.integration.Entity
+import io.homeassistant.companion.android.common.data.integration.getIcon
+import io.homeassistant.companion.android.home.HomePresenterImpl
+import java.util.Calendar
 import io.homeassistant.companion.android.common.R as commonR
 
+fun stringForDomain(domain: String, context: Context): String? =
+    (
+        HomePresenterImpl.domainsWithNames + mapOf(
+            "automation" to commonR.string.automation,
+            "binary_sensor" to commonR.string.binary_sensor,
+            "device_tracker" to commonR.string.device_tracker,
+            "input_number" to commonR.string.domain_input_number,
+            "media_player" to commonR.string.media_player,
+            "persistent_notification" to commonR.string.persistent_notification,
+            "person" to commonR.string.person,
+            "select" to commonR.string.select,
+            "sensor" to commonR.string.sensor,
+            "sun" to commonR.string.sun,
+            "update" to commonR.string.update,
+            "weather" to commonR.string.weather,
+            "zone" to commonR.string.zone
+        )
+        )[domain]?.let { context.getString(it) }
+
 fun getIcon(icon: String?, domain: String, context: Context): IIcon? {
-    return if (icon?.startsWith("mdi") == true) {
-        val mdiIcon = icon.split(":")[1]
-        IconicsDrawable(context, "cmd-$mdiIcon").icon
-    } else {
-        when (domain) {
-            "input_boolean", "switch" -> CommunityMaterial.Icon2.cmd_light_switch
-            "light" -> CommunityMaterial.Icon2.cmd_lightbulb
-            "lock" -> CommunityMaterial.Icon2.cmd_lock
-            "script" -> CommunityMaterial.Icon3.cmd_script_text_outline
-            "scene" -> CommunityMaterial.Icon3.cmd_palette_outline
-            else -> CommunityMaterial.Icon.cmd_cellphone
-        }
-    }
+    val simpleEntity = Entity(
+        "$domain.ha_android_placeholder",
+        "",
+        mapOf("icon" to icon),
+        Calendar.getInstance(),
+        Calendar.getInstance(),
+        null
+    )
+    return simpleEntity.getIcon(context)
 }
 
 fun onEntityClickedFeedback(isToastEnabled: Boolean, isHapticEnabled: Boolean, context: Context, friendlyName: String, haptic: HapticFeedback) {
-    if (isToastEnabled)
-        Toast.makeText(context, context.getString(commonR.string.toast_message, friendlyName), Toast.LENGTH_SHORT).show()
-    if (isHapticEnabled)
+    val message = context.getString(commonR.string.toast_message, friendlyName)
+    onEntityFeedback(isToastEnabled, isHapticEnabled, message, context, haptic)
+}
+
+fun onEntityFeedback(isToastEnabled: Boolean, isHapticEnabled: Boolean, message: String, context: Context, haptic: HapticFeedback) {
+    if (isToastEnabled) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+    if (isHapticEnabled) {
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
 }

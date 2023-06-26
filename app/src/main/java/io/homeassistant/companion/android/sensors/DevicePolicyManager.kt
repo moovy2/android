@@ -13,7 +13,9 @@ class DevicePolicyManager : SensorManager {
             "is_work_profile",
             "binary_sensor",
             R.string.sensor_name_work_profile,
-            R.string.sensor_description_work_profile
+            R.string.sensor_description_work_profile,
+            "mdi:briefcase",
+            updateType = SensorManager.BasicSensor.UpdateType.INTENT
         )
     }
 
@@ -23,12 +25,10 @@ class DevicePolicyManager : SensorManager {
 
     private var isManagedProfileAvailable: Boolean = false
 
-    override val enabledByDefault: Boolean
-        get() = false
     override val name: Int
         get() = R.string.sensor_name_device_policy
 
-    override fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
+    override suspend fun getAvailableSensors(context: Context): List<SensorManager.BasicSensor> {
         return listOf(isWorkProfile)
     }
 
@@ -52,17 +52,15 @@ class DevicePolicyManager : SensorManager {
     }
 
     private fun updateWorkProfile(context: Context) {
-
-        if (!isEnabled(context, isWorkProfile.id))
+        if (!isEnabled(context, isWorkProfile)) {
             return
-
-        val icon = "mdi:briefcase"
+        }
 
         onSensorUpdated(
             context,
             isWorkProfile,
             isManagedProfileAvailable,
-            icon,
+            isWorkProfile.statelessIcon,
             mapOf()
         )
     }

@@ -1,32 +1,46 @@
 package io.homeassistant.companion.android.webview
 
+import android.app.Activity
 import android.content.Context
+import android.content.IntentSender
 import android.graphics.Color
 import android.net.Uri
 import android.util.Log
+import androidx.activity.result.ActivityResult
 import dagger.hilt.android.qualifiers.ActivityContext
-import io.homeassistant.companion.android.common.data.authentication.AuthenticationRepository
 import io.homeassistant.companion.android.common.data.authentication.SessionState
-import io.homeassistant.companion.android.common.data.integration.IntegrationRepository
-import io.homeassistant.companion.android.common.data.url.UrlRepository
+import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
+import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.util.DisabledLocationHandler
+import io.homeassistant.companion.android.matter.MatterFrontendCommissioningStatus
+import io.homeassistant.companion.android.matter.MatterManager
+import io.homeassistant.companion.android.thread.ThreadManager
 import io.homeassistant.companion.android.util.UrlHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.regex.Matcher
 import java.util.regex.Pattern
 import javax.inject.Inject
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
+import io.homeassistant.companion.android.common.R as commonR
 
 class WebViewPresenterImpl @Inject constructor(
     @ActivityContext context: Context,
-    private val urlUseCase: UrlRepository,
-    private val authenticationUseCase: AuthenticationRepository,
-    private val integrationUseCase: IntegrationRepository
+    private val serverManager: ServerManager,
+    private val prefsRepository: PrefsRepository,
+    private val matterUseCase: MatterManager,
+    private val threadUseCase: ThreadManager
 ) : WebViewPresenter {
 
     companion object {
@@ -37,50 +51,118 @@ class WebViewPresenterImpl @Inject constructor(
 
     private val mainScope: CoroutineScope = CoroutineScope(Dispatchers.Main + Job())
 
+    private var serverId: Int = ServerManager.SERVER_ID_ACTIVE
+
     private var url: URL? = null
+    private var urlForServer: Int? = null
+
+    private val _matterCommissioningStatus = MutableStateFlow(MatterFrontendCommissioningStatus.NOT_STARTED)
+
+    private var matterCommissioningIntentSender: IntentSender? = null
+
+    init {
+        updateActiveServer()
+    }
 
     override fun onViewReady(path: String?) {
         mainScope.launch {
             val oldUrl = url
-            url = urlUseCase.getUrl(urlUseCase.isInternal() || urlUseCase.isPrioritizeInternal())
+            val oldUrlForServer = urlForServer
+
+            var server = serverManager.getServer(serverId)
+            if (server == null) {
+                setActiveServer(ServerManager.SERVER_ID_ACTIVE)
+                server = serverManager.getServer(serverId)
+            }
+
+            try {
+                if (serverManager.authenticationRepository(serverId).getSessionState() == SessionState.ANONYMOUS) return@launch
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Unable to get server session state, not continuing")
+                return@launch
+            }
+
+            val serverConnectionInfo = server?.connection
+            url = serverConnectionInfo?.getUrl(
+                serverConnectionInfo.isInternal() || (serverConnectionInfo.prioritizeInternal && !DisabledLocationHandler.isLocationEnabled(view as Context))
+            )
+            urlForServer = server?.id
 
             if (path != null && !path.startsWith("entityId:")) {
                 url = UrlHandler.handle(url, path)
             }
 
             /*
-            We only want to cause the UI to reload if the URL that we need to load has changed.  An
-            example of this would be opening the app on wifi with a local url then loosing wifi
-            signal and reopening app.  Without this we would still be trying to use the internal
-            url externally.
+            We only want to cause the UI to reload if the server or URL that we need to load has
+            changed. An example of this would be opening the app on wifi with a local url then
+            loosing wifi signal and reopening app. Without this we would still be trying to use the
+            internal url externally.
              */
-            if (oldUrl?.host != url?.host) {
+            if (oldUrlForServer != urlForServer || oldUrl?.host != url?.host) {
                 view.loadUrl(
                     Uri.parse(url.toString())
                         .buildUpon()
                         .appendQueryParameter("external_auth", "1")
                         .build()
-                        .toString()
+                        .toString(),
+                    oldUrlForServer == urlForServer
                 )
             }
         }
     }
 
+    override fun getActiveServer(): Int = serverId
+
+    override fun updateActiveServer() {
+        if (serverManager.isRegistered()) {
+            serverManager.getServer()?.let {
+                serverId = it.id
+            }
+        }
+    }
+
+    override fun setActiveServer(id: Int) {
+        serverManager.getServer(id)?.let {
+            if (serverManager.authenticationRepository(id).getSessionState() == SessionState.CONNECTED) {
+                serverManager.activateServer(id)
+                serverId = id
+            }
+        }
+    }
+
+    override fun switchActiveServer(id: Int) {
+        if (serverId != id && serverId != ServerManager.SERVER_ID_ACTIVE) {
+            setAppActive(false) // 'Lock' old server
+        }
+        setActiveServer(id)
+        onViewReady(null)
+        view.unlockAppIfNeeded()
+    }
+
+    override fun nextServer() = moveToServer(next = true)
+
+    override fun previousServer() = moveToServer(next = false)
+
+    private fun moveToServer(next: Boolean) {
+        val servers = serverManager.defaultServers
+        if (servers.size < 2) return
+        val currentServerIndex = servers.indexOfFirst { it.id == serverId }
+        if (currentServerIndex > -1) {
+            var newServerIndex = if (next) currentServerIndex + 1 else currentServerIndex - 1
+            if (newServerIndex == servers.size) newServerIndex = 0
+            if (newServerIndex < 0) newServerIndex = servers.size - 1
+            servers.getOrNull(newServerIndex)?.let { switchActiveServer(it.id) }
+        }
+    }
+
     override fun checkSecurityVersion() {
         mainScope.launch {
-
             try {
-                val version = integrationUseCase.getHomeAssistantVersion().split(".")
-                if (version.size >= 3) {
-                    val year = Integer.parseInt(version[0])
-                    val month = Integer.parseInt(version[1])
-                    val release = Integer.parseInt(version[2])
-                    if (year < 2021 || (year == 2021 && month == 1 && release < 5)) {
-                        if (integrationUseCase.shouldNotifySecurityWarning()) {
-                            view.showError(WebView.ErrorType.SECURITY_WARNING)
-                        } else {
-                            Log.w(TAG, "Still not updated but have already notified.")
-                        }
+                if (!serverManager.integrationRepository(serverId).isHomeAssistantVersionAtLeast(2021, 1, 5)) {
+                    if (serverManager.integrationRepository(serverId).shouldNotifySecurityWarning()) {
+                        view.showError(WebView.ErrorType.SECURITY_WARNING)
+                    } else {
+                        Log.w(TAG, "Still not updated but have already notified.")
                     }
                 }
             } catch (e: Exception) {
@@ -89,18 +171,26 @@ class WebViewPresenterImpl @Inject constructor(
         }
     }
 
-    override fun onGetExternalAuth(callback: String, force: Boolean) {
+    override fun onGetExternalAuth(context: Context, callback: String, force: Boolean) {
         mainScope.launch {
             try {
-                view.setExternalAuth("$callback(true, ${authenticationUseCase.retrieveExternalAuthentication(force)})")
+                view.setExternalAuth("$callback(true, ${serverManager.authenticationRepository(serverId).retrieveExternalAuthentication(force)})")
             } catch (e: Exception) {
                 Log.e(TAG, "Unable to retrieve external auth", e)
+                val anonymousSession = serverManager.getServer(serverId) == null || serverManager.authenticationRepository(serverId).getSessionState() == SessionState.ANONYMOUS
                 view.setExternalAuth("$callback(false)")
                 view.showError(
-                    if (authenticationUseCase.getSessionState() == SessionState.ANONYMOUS)
-                        WebView.ErrorType.AUTHENTICATION
-                    else
-                        WebView.ErrorType.TIMEOUT
+                    errorType = when {
+                        anonymousSession -> WebView.ErrorType.AUTHENTICATION
+                        e is SSLException || (e is SocketTimeoutException && e.suppressed.any { it is SSLException }) -> WebView.ErrorType.SSL
+                        else -> WebView.ErrorType.TIMEOUT
+                    },
+                    description = when {
+                        anonymousSession -> null
+                        e is SSLHandshakeException || (e is SocketTimeoutException && e.suppressed.any { it is SSLHandshakeException }) -> context.getString(commonR.string.webview_error_FAILED_SSL_HANDSHAKE)
+                        e is SSLException || (e is SocketTimeoutException && e.suppressed.any { it is SSLException }) -> context.getString(commonR.string.webview_error_SSL_INVALID)
+                        else -> null
+                    }
                 )
             }
         }
@@ -109,7 +199,10 @@ class WebViewPresenterImpl @Inject constructor(
     override fun onRevokeExternalAuth(callback: String) {
         mainScope.launch {
             try {
-                authenticationUseCase.revokeSession()
+                serverManager.getServer(serverId)?.let {
+                    serverManager.authenticationRepository(it.id).revokeSession()
+                    serverManager.removeServer(it.id)
+                }
                 view.setExternalAuth("$callback(true)")
                 view.relaunchApp()
             } catch (e: Exception) {
@@ -119,63 +212,81 @@ class WebViewPresenterImpl @Inject constructor(
         }
     }
 
-    override fun clearKnownUrls() {
-        mainScope.launch {
-            urlUseCase.saveUrl("", true)
-            urlUseCase.saveUrl("", false)
+    override fun isFullScreen(): Boolean = runBlocking {
+        prefsRepository.isFullScreenEnabled()
+    }
+
+    override fun getScreenOrientation(): String? = runBlocking {
+        prefsRepository.getScreenOrientation()
+    }
+
+    override fun isKeepScreenOnEnabled(): Boolean = runBlocking {
+        prefsRepository.isKeepScreenOnEnabled()
+    }
+
+    override fun isPinchToZoomEnabled(): Boolean = runBlocking {
+        prefsRepository.isPinchToZoomEnabled()
+    }
+
+    override fun isWebViewDebugEnabled(): Boolean = runBlocking {
+        prefsRepository.isWebViewDebugEnabled()
+    }
+
+    override fun isAppLocked(): Boolean = runBlocking {
+        if (serverManager.isRegistered()) {
+            try {
+                serverManager.integrationRepository(serverId).isAppLocked()
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Cannot determine app locked state")
+                false
+            }
+        } else {
+            false
         }
     }
 
-    override fun isFullScreen(): Boolean {
-        return runBlocking {
-            integrationUseCase.isFullScreenEnabled()
-        }
+    override fun setAppActive(active: Boolean) = runBlocking {
+        serverManager.getServer(serverId)?.let {
+            try {
+                serverManager.integrationRepository(serverId).setAppActive(active)
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "Cannot set app active $active for server $serverId")
+                Unit
+            }
+        } ?: Unit
     }
 
-    override fun isKeepScreenOnEnabled(): Boolean {
-        return runBlocking {
-            integrationUseCase.isKeepScreenOnEnabled()
-        }
+    override fun isLockEnabled(): Boolean = runBlocking {
+        serverManager.getServer(serverId)?.let {
+            serverManager.authenticationRepository(serverId).isLockEnabled()
+        } ?: false
     }
 
-    override fun isLockEnabled(): Boolean {
-        return runBlocking {
-            authenticationUseCase.isLockEnabled()
-        }
+    override fun isAutoPlayVideoEnabled(): Boolean = runBlocking {
+        prefsRepository.isAutoPlayVideoEnabled()
     }
 
-    override fun isAutoPlayVideoEnabled(): Boolean {
-        return runBlocking {
-            integrationUseCase.isAutoPlayVideoEnabled()
-        }
+    override fun isAlwaysShowFirstViewOnAppStartEnabled(): Boolean = runBlocking {
+        prefsRepository.isAlwaysShowFirstViewOnAppStartEnabled()
     }
 
-    override fun sessionTimeOut(): Int {
-        return runBlocking {
-            integrationUseCase.getSessionTimeOut()
-        }
-    }
-
-    override fun setSessionExpireMillis(value: Long) {
-        mainScope.launch {
-            integrationUseCase.setSessionExpireMillis(value)
-        }
-    }
-
-    override fun getSessionExpireMillis(): Long {
-        return runBlocking {
-            integrationUseCase.getSessionExpireMillis()
-        }
+    override fun sessionTimeOut(): Int = runBlocking {
+        serverManager.getServer(serverId)?.let {
+            serverManager.integrationRepository(serverId).getSessionTimeOut()
+        } ?: 0
     }
 
     override fun onFinish() {
         mainScope.cancel()
     }
 
-    override fun isSsidUsed(): Boolean {
-        return runBlocking {
-            urlUseCase.getHomeWifiSsids().isNotEmpty()
-        }
+    override fun isSsidUsed(): Boolean =
+        serverManager.getServer(serverId)?.connection?.internalSsids?.isNotEmpty() == true
+
+    override fun getAuthorizationHeader(): String = runBlocking {
+        serverManager.getServer(serverId)?.let {
+            serverManager.authenticationRepository(serverId).buildBearerToken()
+        } ?: ""
     }
 
     override suspend fun parseWebViewColor(webViewColor: String): Int = withContext(Dispatchers.IO) {
@@ -209,6 +320,78 @@ class WebViewPresenterImpl @Inject constructor(
                 m.group(2).toInt(),
                 m.group(3).toInt()
             )
-        } else Color.parseColor(colorString)
+        } else {
+            Color.parseColor(colorString)
+        }
+    }
+
+    override fun appCanCommissionMatterDevice(): Boolean = matterUseCase.appSupportsCommissioning()
+
+    override fun startCommissioningMatterDevice(context: Context) {
+        if (_matterCommissioningStatus.value != MatterFrontendCommissioningStatus.REQUESTED) {
+            _matterCommissioningStatus.tryEmit(MatterFrontendCommissioningStatus.REQUESTED)
+
+            mainScope.launch {
+                val deviceThreadIntent = try {
+                    threadUseCase.syncPreferredDataset(context, serverId, this)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Unable to sync preferred Thread dataset, continuing", e)
+                    null
+                }
+                if (deviceThreadIntent != null) {
+                    matterCommissioningIntentSender = deviceThreadIntent
+                    _matterCommissioningStatus.tryEmit(MatterFrontendCommissioningStatus.THREAD_EXPORT_TO_SERVER)
+                } else {
+                    startMatterCommissioningFlow(context)
+                }
+            }
+        } // else already waiting for a result, don't send another request
+    }
+
+    private fun startMatterCommissioningFlow(context: Context) {
+        matterUseCase.startNewCommissioningFlow(
+            context,
+            { intentSender ->
+                Log.d(TAG, "Matter commissioning is ready")
+                matterCommissioningIntentSender = intentSender
+                _matterCommissioningStatus.tryEmit(MatterFrontendCommissioningStatus.IN_PROGRESS)
+            },
+            { e ->
+                Log.e(TAG, "Matter commissioning couldn't be prepared", e)
+                _matterCommissioningStatus.tryEmit(MatterFrontendCommissioningStatus.ERROR)
+            }
+        )
+    }
+
+    override fun getMatterCommissioningStatusFlow(): Flow<MatterFrontendCommissioningStatus> =
+        _matterCommissioningStatus.asStateFlow()
+
+    override fun getMatterCommissioningIntent(): IntentSender? {
+        val intent = matterCommissioningIntentSender
+        matterCommissioningIntentSender = null
+        return intent
+    }
+
+    override fun onMatterCommissioningIntentResult(context: Context, result: ActivityResult) {
+        when (_matterCommissioningStatus.value) {
+            MatterFrontendCommissioningStatus.THREAD_EXPORT_TO_SERVER -> {
+                mainScope.launch {
+                    threadUseCase.sendThreadDatasetExportResult(result, serverId)
+                    startMatterCommissioningFlow(context)
+                }
+            }
+            else -> {
+                // Any errors will have been shown in the UI provided by Play Services
+                if (result.resultCode == Activity.RESULT_OK) {
+                    Log.d(TAG, "Matter commissioning returned success")
+                } else {
+                    Log.d(TAG, "Matter commissioning returned with non-OK code ${result.resultCode}")
+                }
+            }
+        }
+    }
+
+    override fun confirmMatterCommissioningError() {
+        _matterCommissioningStatus.tryEmit(MatterFrontendCommissioningStatus.NOT_STARTED)
     }
 }

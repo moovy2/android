@@ -4,23 +4,23 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
-import androidx.room.Update
 
 @Dao
 interface TileDao {
 
-    @Query("SELECT * FROM qs_tiles WHERE tileId = :tileId")
-    fun get(tileId: String): TileEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    fun add(tileEntity: TileEntity)
-
-    @Update
-    fun update(tileEntity: TileEntity)
-
-    @Query("DELETE FROM qs_tiles WHERE tileId = :id")
-    fun delete(id: String)
+    @Query("SELECT * FROM qs_tiles WHERE tile_id = :tileId")
+    suspend fun get(tileId: String): TileEntity?
 
     @Query("SELECT * FROM qs_tiles")
-    fun getAll(): Array<TileEntity>?
+    suspend fun getAll(): List<TileEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun add(tileEntity: TileEntity)
+}
+
+suspend fun TileDao.getHighestInUse(): TileEntity? {
+    return getAll()
+        .filter { it.added || it.isSetup }
+        .sortedByDescending { it.tileId.split("_")[1].toInt() }
+        .getOrNull(0)
 }
